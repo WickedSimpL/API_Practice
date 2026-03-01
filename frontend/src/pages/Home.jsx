@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useRef } from "react"
 import ImageCanvas from "../ImageCanvas"
 
 export default function Home() {
@@ -6,6 +6,7 @@ export default function Home() {
   const [prompt, setPrompt] = useState("")
   const [resultSrc, setResultSrc] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [point, setPoint] = useState(null)
   const fileRef = useRef(null)
 
   function handleFileChange(e) {
@@ -17,15 +18,22 @@ export default function Home() {
     setResultSrc(null)
   }
 
-  async function handleSegment() {
-    if (!fileRef.current || !prompt.trim()) return
+ async function handleSegment(pointOverride = null) {
+    if (!fileRef.current) return
+    const activePoint = pointOverride || point
+    if (!prompt.trim() && !activePoint) return
     setLoading(true)
     try {
       const formData = new FormData()
       formData.append("image", fileRef.current)
       formData.append("prompt", prompt)
+      if (activePoint) {
+        formData.append("point_x", activePoint.x)
+        formData.append("point_y", activePoint.y)
+      }
 
-      const res = await fetch("http://localhost:8000/segment", {
+
+      const res = await fetch("https://losing-keeley-flannelly.ngrok-free.dev/segment", {
         method: "POST",
         body: formData,
       })
@@ -85,7 +93,10 @@ export default function Home() {
           </button>
         </div>
       )}
-      <ImageCanvas imageSrc={resultSrc || imageSrc} />
+      <ImageCanvas
+    imageSrc={resultSrc || imageSrc}
+    onPointClick={(pt) => { setPoint(pt); handleSegment(pt); }}
+  />
     </div>
   )
 }

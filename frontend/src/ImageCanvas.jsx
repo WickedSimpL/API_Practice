@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react"
 const CANVAS_MAX_WIDTH = 900
 const CANVAS_MAX_HEIGHT = 600
 
-export default function ImageCanvas({ imageSrc }) {
+export default function ImageCanvas({ imageSrc, onPointClick }) {
   const canvasRef = useRef(null)
   // scaleRef tracks how the image was scaled onto the canvas so clicks
   // can be converted back to original image coordinates for SAM 2 prompts.
@@ -65,7 +65,8 @@ export default function ImageCanvas({ imageSrc }) {
 
     console.log("SAM 2 point prompt:", [imageX, imageY])
     setClickedPoint({ canvasX, canvasY, imageX, imageY })
-
+    // Add after line 67: setClickedPoint({ canvasX, canvasY, imageX, imageY })
+    if (onPointClick) onPointClick({ x: imageX, y: imageY })
     // Draw a marker on the canvas at the clicked position
     const ctx = canvas.getContext("2d")
     ctx.beginPath()
