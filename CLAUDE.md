@@ -1,0 +1,1 @@
+Always provide code snippets never full code changes. Always provide detailed instructions over direct code changes.

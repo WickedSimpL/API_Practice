@@ -1,0 +1,16 @@
+# Python
+server/
+__pycache__/
+*.pyc
+
+# SAM 3 repo (clone separately on each machine)
+sam3/
+
+# Node
+frontend/node_modules/
+
+# Generated / data
+items.db
+output.png
+*.pt
+*.pth
