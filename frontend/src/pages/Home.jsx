@@ -1,5 +1,7 @@
 import { useState, useRef } from "react"
 import ImageCanvas from "../ImageCanvas"
+import JSZip from "jszip"
+import { saveAs } from "file-saver"
 
 export default function Home() {
   const [imageSrc, setImageSrc] = useState(null)
@@ -7,6 +9,7 @@ export default function Home() {
   const [resultSrc, setResultSrc] = useState(null)
   const [loading, setLoading] = useState(false)
   const [point, setPoint] = useState(null)
+  const [gallery, setGallery] = useState([])
   const fileRef = useRef(null)
 
   function handleFileChange(e) {
@@ -18,6 +21,17 @@ export default function Home() {
     setResultSrc(null)
   }
 
+  async function handleDownload() {
+    const zip = new JSZip()
+    for (let i = 0; i < gallery.length; i++) {
+      const res = await fetch(gallery[i])
+      const blob = await res.blob()
+      zip.file(`mask_${i + 1}.png`, blob)
+    }
+    const content = await zip.generateAsync({ type: "blob" })
+    saveAs(content, "segmentation_masks.zip")
+  }
+
  async function handleSegment(pointOverride = null) {
     if (!fileRef.current) return
     const activePoint = pointOverride || point
@@ -27,18 +41,19 @@ export default function Home() {
       const formData = new FormData()
       formData.append("image", fileRef.current)
       formData.append("prompt", prompt)
-      if (activePoint) {
+      if (!prompt.trim() && activePoint && activePoint.x != null && activePoint.y != null) {
         formData.append("point_x", activePoint.x)
         formData.append("point_y", activePoint.y)
-      }
+  }
 
-
-      const res = await fetch("https://losing-keeley-flannelly.ngrok-free.dev/segment", {
+      const res = await fetch("http://localhost:8000/segment", {
         method: "POST",
         body: formData,
       })
       const data = await res.json()
+      console.log("data.image:", data.image ? "received" : "empty", "gallery length:", gallery.length + 1)
       setResultSrc(data.image)  // base64 data URL
+      setGallery(prev => [...prev, data.image])
     } catch (err) {
       console.error("Segmentation failed:", err)
     } finally {
@@ -77,7 +92,7 @@ export default function Home() {
             }}
           />
           <button
-            onClick={handleSegment}
+            onClick={() => { setPoint(null); handleSegment(); }}
             disabled={loading || !prompt.trim()}
             style={{
               padding: "0.5rem 1.25rem",
@@ -97,6 +112,46 @@ export default function Home() {
     imageSrc={resultSrc || imageSrc}
     onPointClick={(pt) => { setPoint(pt); handleSegment(pt); }}
   />
+  {gallery.length > 0 && (
+    <div style={{
+      display: "flex",
+      gap: "0.75rem",
+      overflowX: "auto",
+      padding: "1rem 0",
+      maxWidth: "900px",
+      width: "100%",
+    }}>
+      {gallery.map((src, i) => (
+        <img
+          key={i}
+          src={src}
+          alt={`Mask ${i + 1}`}
+          onClick={() => setResultSrc(src)}
+          style={{
+            height: "100px",
+            borderRadius: "4px",
+            border: resultSrc === src ? "2px solid #2563eb" : "2px solid transparent",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        />
+      ))}
+    </div>
+  )}
+     <button
+    onClick={handleDownload}
+    style={{
+      padding: "0.5rem 1.25rem",
+      background: "#2563eb",
+      color: "#fff",
+      border: "none",
+      borderRadius: "6px",
+      cursor: "pointer",
+      fontSize: "0.95rem",
+    }}
+  >
+    Download All ({gallery.length})
+  </button>
     </div>
   )
 }

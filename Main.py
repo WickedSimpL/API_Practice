@@ -10,6 +10,9 @@ from fastapi.responses import JSONResponse
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 from PIL import Image
+import logging
+logging.basicConfig(level=logging.DEBUG)                                                                                                                                                                                                                                                                              
+logger = logging.getLogger(__name__)
 
 DB_PATH = "items.db"
 
@@ -51,7 +54,7 @@ sam3_processor = None
 async def lifespan(app: FastAPI):
     global sam3_model, sam3_processor
     init_db()
-    sam3_model = build_sam3_image_model()
+    sam3_model = build_sam3_image_model(enable_inst_interactivity=True)
     sam3_processor = Sam3Processor(sam3_model)
     print("SAM 3 model loaded.")
     yield
@@ -63,23 +66,18 @@ app = FastAPI(title="My API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
       CORSMiddleware,
-      allow_origins=["http://localhost:5173"],  # Vite dev server
+      allow_origins=["*"],  # Vite dev server
       allow_methods=["*"],
       allow_headers=["*"],
   )
 
-# --- Models ---
+from fastapi.exceptions import RequestValidationError
+from starlette.requests import Request
 
-class ItemIn(BaseModel):
-    """What the client sends when creating an item."""
-    name: str
-    description: str | None = None
-    price: float
-
-class ItemOut(ItemIn):
-    """What the API returns — includes the auto-assigned id."""
-    id: int
-
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    print(f"422 DETAIL: {exc.errors()}")
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 # --- Routes ---
 
@@ -88,36 +86,38 @@ def root():
     return {"message": "Hello, World!"}
 
 
-@app.get("/items", response_model=list[ItemOut])
-def list_items(conn: sqlite3.Connection = Depends(get_db)):
-    rows = conn.execute("SELECT * FROM items").fetchall()
-    return [dict(row) for row in rows]
 
-
-@app.get("/items/{item_id}", response_model=ItemOut)
-def get_item(item_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    row = conn.execute(
-        "SELECT * FROM items WHERE id = ?", (item_id,)
-    ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return dict(row)
 
 @app.post("/segment")
 async def segment_image(
     image: UploadFile = File(...),
-    prompt: str = Form(...),
+    prompt: str = Form(""),
+    point_x: int | None = Form(None),
+    point_y: int | None = Form(None),
 ):
     # Read uploaded image
+    logger.debug(f"segment request: prompt={prompt!r}, point_x={point_x!r}, point_y={point_y!r}")
     contents = await image.read()
     pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
 
     # Run SAM 3 inference with text prompt
     inference_state = sam3_processor.set_image(pil_image)
-    output = sam3_processor.set_text_prompt(state=inference_state, prompt=prompt)
 
-    masks = output["masks"]   # list of boolean numpy arrays
-    scores = output["scores"] # confidence scores
+    if not prompt.strip() and (point_x is None or point_y is None):
+      return JSONResponse({"error": "Provide either a text prompt or point coordinates"}, status_code=400)
+
+    if prompt.strip():
+        output = sam3_processor.set_text_prompt(state=inference_state, prompt=prompt)
+        masks = output["masks"]   # list of boolean numpy arrays
+        scores = output["scores"] # confidence scores
+
+    import numpy as np
+    if point_x is not None and point_y is not None:    
+        masks, scores, _ = sam3_model.predict_inst(
+            inference_state,
+            point_coords=np.array([[point_x, point_y]]),
+            point_labels=np.array([1])
+        )
 
     # Create overlay image for each mask
     import numpy as np
@@ -144,31 +144,6 @@ async def segment_image(
         "num_masks": len(masks),
         "scores": [float(s) for s in scores],
     })
-
-
-@app.post("/items", response_model=ItemOut, status_code=201)
-def create_item(item: ItemIn, conn: sqlite3.Connection = Depends(get_db)):
-    print(f"Inserting: {(item.name, item.description, item.price)}")
-    cursor = conn.execute(
-        "INSERT INTO items (name, description, price) VALUES (?, ?, ?)",
-        (item.name, item.description, item.price),
-    )
-    conn.commit()
-    row = conn.execute(
-        "SELECT * FROM items WHERE id = ?", (cursor.lastrowid,)
-    ).fetchone()
-    return dict(row)
-
-
-@app.delete("/items/{item_id}", status_code=204)
-def delete_item(item_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    row = conn.execute(
-        "SELECT id FROM items WHERE id = ?", (item_id,)
-    ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
-    conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
-    conn.commit()
 
 
 # --- Run ---

@@ -5,10 +5,38 @@ const CANVAS_MAX_HEIGHT = 600
 
 export default function ImageCanvas({ imageSrc, onPointClick }) {
   const canvasRef = useRef(null)
-  // scaleRef tracks how the image was scaled onto the canvas so clicks
-  // can be converted back to original image coordinates for SAM 2 prompts.
-  const scaleRef = useRef({ scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 })
+  const scaleRef = useRef({ scaleX: 1, scaleY: 1 })
+  const imgRef = useRef(null)
   const [clickedPoint, setClickedPoint] = useState(null)
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const isDragging = useRef(false)
+  const lastMouse = useRef({ x: 0, y: 0 })
+
+  function drawCanvas() {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext("2d")
+    const img = imgRef.current
+    if (!img) return
+
+    const scale = Math.min(
+      CANVAS_MAX_WIDTH / img.naturalWidth,
+      CANVAS_MAX_HEIGHT / img.naturalHeight,
+      1
+    )
+    const drawWidth = img.naturalWidth * scale
+    const drawHeight = img.naturalHeight * scale
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.save()
+    ctx.translate(pan.x, pan.y)
+    ctx.scale(zoom, zoom)
+    ctx.drawImage(img, 0, 0, drawWidth, drawHeight)
+    ctx.restore()
+
+    scaleRef.current = { scaleX: 1 / scale, scaleY: 1 / scale }
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -16,58 +44,47 @@ export default function ImageCanvas({ imageSrc, onPointClick }) {
 
     if (!imageSrc) {
       ctx.clearRect(0, 0, canvas.width, canvas.height)
-      canvas.width = CANVAS_MAX_WIDTH
-      canvas.height = CANVAS_MAX_HEIGHT
-      drawPlaceholder(ctx, canvas.width, canvas.height)
+      drawPlaceholder(ctx, CANVAS_MAX_WIDTH, CANVAS_MAX_HEIGHT)
+      imgRef.current = null
       return
     }
 
     const img = new Image()
     img.src = imageSrc
     img.onload = () => {
-      // Scale image to fit within the max dimensions, preserving aspect ratio
-      const scale = Math.min(
-        CANVAS_MAX_WIDTH / img.naturalWidth,
-        CANVAS_MAX_HEIGHT / img.naturalHeight,
-        1  // never upscale
-      )
-      const drawWidth = img.naturalWidth * scale
-      const drawHeight = img.naturalHeight * scale
-
-      canvas.width = drawWidth
-      canvas.height = drawHeight
-
-      ctx.drawImage(img, 0, 0, drawWidth, drawHeight)
-
-      // Store scale so click handler can convert canvas coords → image coords
-      scaleRef.current = { scaleX: 1 / scale, scaleY: 1 / scale }
+      imgRef.current = img
+      drawCanvas()
       setClickedPoint(null)
     }
   }, [imageSrc])
 
+  useEffect(() => {
+    drawCanvas()
+  }, [zoom, pan])
+
   function handleClick(e) {
-    if (!imageSrc) return
+    if (!imageSrc || isDragging.current) return
 
     const canvas = canvasRef.current
     const rect = canvas.getBoundingClientRect()
-
-    // Canvas CSS size may differ from its pixel size — account for device pixel ratio
     const cssToPixelX = canvas.width / rect.width
     const cssToPixelY = canvas.height / rect.height
 
     const canvasX = (e.clientX - rect.left) * cssToPixelX
     const canvasY = (e.clientY - rect.top) * cssToPixelY
 
-    // Convert to original image coordinates (what SAM 2 expects)
+    // Convert canvas coords to original image coords, accounting for pan & zoom
+    const imgX = (canvasX - pan.x) / zoom
+    const imgY = (canvasY - pan.y) / zoom
     const { scaleX, scaleY } = scaleRef.current
-    const imageX = Math.round(canvasX * scaleX)
-    const imageY = Math.round(canvasY * scaleY)
+    const imageX = Math.round(imgX * scaleX)
+    const imageY = Math.round(imgY * scaleY)
 
-    console.log("SAM 2 point prompt:", [imageX, imageY])
+    console.log("SAM point prompt:", [imageX, imageY])
     setClickedPoint({ canvasX, canvasY, imageX, imageY })
-    // Add after line 67: setClickedPoint({ canvasX, canvasY, imageX, imageY })
     if (onPointClick) onPointClick({ x: imageX, y: imageY })
-    // Draw a marker on the canvas at the clicked position
+
+    // Draw marker
     const ctx = canvas.getContext("2d")
     ctx.beginPath()
     ctx.arc(canvasX, canvasY, 6, 0, 2 * Math.PI)
@@ -78,6 +95,59 @@ export default function ImageCanvas({ imageSrc, onPointClick }) {
     ctx.stroke()
   }
 
+  function handleWheel(e) {
+    e.preventDefault()
+    const canvas = canvasRef.current
+    const rect = canvas.getBoundingClientRect()
+    // Mouse position relative to canvas center
+    const cx = CANVAS_MAX_WIDTH / 2
+    const cy = CANVAS_MAX_HEIGHT / 2
+    const factor = e.deltaY > 0 ? 0.9 : 1.1
+    setZoom(prev => {
+      const newZoom = Math.min(Math.max(prev * factor, 0.5), 5)
+      // Adjust pan so zoom centers on canvas center
+      setPan(p => ({
+        x: cx - (cx - p.x) * (newZoom / prev),
+        y: cy - (cy - p.y) * (newZoom / prev),
+      }))
+      return newZoom
+    })
+  }
+
+  function handleContextMenu(e) {
+    e.preventDefault()
+  }
+
+  function handleMouseDown(e) {
+    if (e.button === 2) {
+      isDragging.current = true
+      lastMouse.current = { x: e.clientX, y: e.clientY }
+      e.preventDefault()
+    }
+  }
+
+  function handleMouseMove(e) {
+    if (!isDragging.current) return
+    const dx = e.clientX - lastMouse.current.x
+    const dy = e.clientY - lastMouse.current.y
+    lastMouse.current = { x: e.clientX, y: e.clientY }
+    setPan(prev => ({ x: prev.x + dx, y: prev.y + dy }))
+  }
+
+  function handleMouseUp(e) {
+    if (e && e.button === 2) {
+      isDragging.current = false
+    }
+  }
+
+  // Attach wheel listener with passive: false to allow preventDefault
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.addEventListener("wheel", handleWheel, { passive: false })
+    return () => canvas.removeEventListener("wheel", handleWheel)
+  }, [])
+
   return (
     <div style={styles.wrapper}>
       <canvas
@@ -85,15 +155,26 @@ export default function ImageCanvas({ imageSrc, onPointClick }) {
         width={CANVAS_MAX_WIDTH}
         height={CANVAS_MAX_HEIGHT}
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={() => { isDragging.current = false }}
         style={styles.canvas}
       />
-      {clickedPoint && (
-        <p style={styles.coords}>
-          Canvas ({Math.round(clickedPoint.canvasX)}, {Math.round(clickedPoint.canvasY)})
-          {" → "}
-          Image ({clickedPoint.imageX}, {clickedPoint.imageY})
-        </p>
-      )}
+      <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+        {clickedPoint && (
+          <p style={styles.coords}>
+            Image ({clickedPoint.imageX}, {clickedPoint.imageY})
+          </p>
+        )}
+        <button
+          onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
+          style={styles.resetBtn}
+        >
+          Reset Zoom ({Math.round(zoom * 100)}%)
+        </button>
+      </div>
     </div>
   )
 }
@@ -119,12 +200,22 @@ const styles = {
     border: "1px solid #333",
     borderRadius: "6px",
     cursor: "crosshair",
-    maxWidth: "100%",
+    width: CANVAS_MAX_WIDTH,
+    height: CANVAS_MAX_HEIGHT,
   },
   coords: {
     margin: 0,
     fontSize: "0.85rem",
     color: "#94a3b8",
     fontFamily: "monospace",
+  },
+  resetBtn: {
+    padding: "0.25rem 0.75rem",
+    background: "#333",
+    color: "#fff",
+    border: "none",
+    borderRadius: "4px",
+    cursor: "pointer",
+    fontSize: "0.8rem",
   },
 }
